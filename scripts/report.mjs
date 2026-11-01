@@ -41,31 +41,62 @@ for (const r of semgrep?.results ?? []) {
 const staticRan = Array.isArray(semgrep?.results) && !(semgrep.errors ?? []).some((e) => e.level === "error" && !e.path);
 
 // ---- secrets: gitleaks (never copy the secret itself) ----
+// Docs, examples and tests are full of placeholder keys; report those as low and group
+// repeats so one example file doesn't produce dozens of findings.
+const NON_PROD = /(^|\/)(docs?|examples?|samples?|tests?|__tests__|spec|fixtures?|mocks?)\/|\.(md|mdx|rst|txt)$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(py|go)$|(^|\/)test_[^/]*\.py$/i;
+const secretGroups = new Map();
 for (const g of Array.isArray(gitleaks) ? gitleaks : []) {
-  add({ id: "secret", severity: /private-key/i.test(g.RuleID) ? "critical" : "high", category: "secrets", title: `Committed secret: ${g.RuleID}`, file: g.File, line: g.StartLine });
+  const file = rel(g.File);
+  const key = `${g.RuleID}|${file}`;
+  const cur = secretGroups.get(key) ?? { rule: g.RuleID, file, line: g.StartLine, n: 0 };
+  cur.n++;
+  secretGroups.set(key, cur);
+}
+for (const g of secretGroups.values()) {
+  const example = NON_PROD.test(g.file);
+  add({
+    id: "secret",
+    severity: example ? "low" : /private-key/i.test(g.rule) ? "critical" : "high",
+    category: "secrets",
+    title: example ? `Possible example credential in docs/tests: ${g.rule}` : `Committed secret: ${g.rule}`,
+    detail: g.n > 1 ? `${g.n} matches in this file` : null,
+    file: g.file,
+    line: g.line,
+  });
 }
 const secretsRan = Array.isArray(gitleaks);
 
 // ---- dependencies: osv-scanner ----
+// One finding per vulnerable package version (not per advisory), at its worst severity.
 let vulnCount = 0;
+const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+const depGroups = new Map();
 for (const res of osv?.results ?? []) {
   for (const p of res.packages ?? []) {
+    const key = `${p.package?.name}@${p.package?.version}`;
     for (const grp of p.groups ?? []) {
       const ids = grp.ids ?? [];
       const malicious = ids.some((id) => id.startsWith("MAL-"));
       const cvss = parseFloat(grp.max_severity) || 0;
       const sev = malicious ? "critical" : cvss >= 9 ? "high" : cvss >= 7 ? "medium" : "low";
       vulnCount++;
-      add({
-        id: malicious ? "malicious-package" : "vulnerable-dependency",
-        severity: sev,
-        category: "dependencies",
-        title: malicious ? `Known malicious package: ${p.package?.name}` : `${p.package?.name}@${p.package?.version} has a known vulnerability`,
-        detail: ids.slice(0, 4).join(", "),
-        file: res.source?.path,
-      });
+      const cur = depGroups.get(key) ?? { name: p.package?.name, version: p.package?.version, sev: "low", malicious: false, ids: [], file: res.source?.path };
+      if (SEV_RANK[sev] > SEV_RANK[cur.sev]) cur.sev = sev;
+      cur.malicious ||= malicious;
+      cur.ids.push(ids.find((id) => id.startsWith("MAL-")) ?? ids[0]);
+      depGroups.set(key, cur);
     }
   }
+}
+for (const d of depGroups.values()) {
+  add({
+    id: d.malicious ? "malicious-package" : "vulnerable-dependency",
+    severity: d.sev,
+    category: "dependencies",
+    title: d.malicious ? `Known malicious package: ${d.name}` : `${d.name}@${d.version}: ${d.ids.length} known ${d.ids.length === 1 ? "vulnerability" : "vulnerabilities"}`,
+    detail: d.ids.slice(0, 5).join(", ") + (d.ids.length > 5 ? ` +${d.ids.length - 5} more` : ""),
+    file: d.file,
+  });
 }
 const depsRan = osv != null;
 
@@ -115,18 +146,26 @@ if (full && dynamic) {
       if (repeat === "fail") add({ id: "not-reproducible", severity: "low", category: "boot", title: "Runs didn't produce the same results", detail: `${okRuns.length}/3 runs succeeded` });
     }
   }
-  egressStep = egress.undeclared.length || egress.rawIps.length ? "fail" : oddInstall.length ? "warn" : "pass";
+  // Runtime egress is only meaningful if the code actually ran.
+  egressStep = egress.undeclared.length || egress.rawIps.length ? "fail" : oddInstall.length ? "warn" : boot === "pass" ? "pass" : "skip";
 }
 
 // ---- score ----
+// Malicious-looking code (critical) always costs 40. Everything else is capped per category,
+// so a repo with many outdated dependencies or example keys can't sink to zero on that alone.
 const counts = Object.fromEntries(SEV_ORDER.map((s) => [s, findings.filter((f) => f.severity === s).length]));
-let score = 100 - 40 * counts.critical - 15 * counts.high - Math.min(25, 5 * counts.medium) - Math.min(5, counts.low);
+const CAPS = { dependencies: 20, secrets: 30, env: 3, license: 5, manifest: 5, build: 10, boot: 10 };
+const WEIGHT = { high: 15, medium: 5, low: 1, info: 0 };
+const byCat = {};
+for (const f of findings) if (f.severity !== "critical") byCat[f.category] = (byCat[f.category] ?? 0) + WEIGHT[f.severity];
+let score = 100 - 40 * counts.critical;
+for (const [cat, pts] of Object.entries(byCat)) score -= Math.min(CAPS[cat] ?? 45, pts);
 if (build === "fail") score -= 10;
 if (boot === "fail") score -= 10;
 score = Math.max(0, Math.min(100, score));
 
 const scanErrors = [!staticRan && "static", !secretsRan && "secrets", !depsRan && "dependencies"].filter(Boolean);
-const status = scanErrors.length === 3 ? "error" : counts.critical || score < 50 ? "failed" : counts.high || score < 80 || scanErrors.length ? "warning" : "passed";
+const status = scanErrors.length === 3 ? "error" : counts.critical ? "failed" : counts.high || score < 80 || scanErrors.length ? "warning" : "passed";
 
 const badges = [];
 if (staticRan && secretsRan && !counts.critical) badges.push("Scanned");

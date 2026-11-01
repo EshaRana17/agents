@@ -71,3 +71,8 @@ jq -n \
   --slurpfile er "$OUT/egress-runtime.json" \
   '{install: {exit: $install_exit, seconds: $install_secs, logTail: $install_tail}, probes: $probes, egress: {install: $ei[0], runtime: $er[0]}}' \
   > "$OUT/dynamic.json"
+
+# Keep uploaded logs small.
+for f in install.log probe.log; do
+  if [ -f "$OUT/$f" ]; then tail -c 300000 "$OUT/$f" > "$OUT/$f.tmp" && mv "$OUT/$f.tmp" "$OUT/$f"; fi
+done

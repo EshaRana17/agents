@@ -155,7 +155,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: report-${{ inputs.job_id }}
-          path: out/report.json
+          # Logs help sellers fix failed builds. They come from the scanned repo, so they're
+          # only ever downloaded, never executed or rendered.
+          path: |
+            out/report.json
+            out/detect.json
+            out/install.log
+            out/probe.log
+          if-no-files-found: ignore
           retention-days: 30
 
       # The only step that sees the callback secret. Nothing from the target repo runs here.

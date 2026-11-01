@@ -34,7 +34,11 @@ export function clean(s, max = MAX_TEXT) {
 
 /** Repo-relative path for a file inside the scanned checkout. */
 export function rel(path, root = "target") {
-  return clean(String(path).replace(/\\/g, "/").replace(new RegExp(`^(\\./)?${root}/`), ""), 200);
+  // Tools report "target/x", "./target/x" or an absolute runner path ".../work/agents/agents/target/x";
+  // the first "/target/" is our checkout folder (a repo may have its own "target" folders deeper in).
+  const p = String(path).replace(/\\/g, "/");
+  const i = p.startsWith("/") ? p.indexOf(`/${root}/`) : -1;
+  return clean(i >= 0 ? p.slice(i + root.length + 2) : p.replace(new RegExp(`^(\\./)?${root}/`), ""), 200);
 }
 
 /** Domain list values must look like hostnames (optionally with a leading *.) */

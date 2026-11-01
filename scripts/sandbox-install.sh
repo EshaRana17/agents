@@ -14,12 +14,13 @@ case "$runtime" in
   node)
     # Non-root container: run package managers through corepack instead of `corepack enable`.
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-    if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile || corepack pnpm install || exit 1
-    elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile || corepack yarn install || exit 1
-    elif [ -f package-lock.json ]; then npm ci || npm install || exit 1
-    else npm install || exit 1
+    # Build with the same package manager the repo uses (pnpm/yarn workspaces break under npm).
+    if [ -f pnpm-lock.yaml ]; then pm="corepack pnpm"; $pm install --frozen-lockfile || $pm install || exit 1
+    elif [ -f yarn.lock ]; then pm="corepack yarn"; $pm install --frozen-lockfile || $pm install || exit 1
+    elif [ -f package-lock.json ]; then pm="npm"; npm ci || npm install || exit 1
+    else pm="npm"; npm install || exit 1
     fi
-    if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then npm run build || exit 2; fi
+    if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then $pm run build || exit 2; fi
     ;;
   python)
     /opt/uv/uv venv .venv -q || exit 1
