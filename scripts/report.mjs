@@ -103,7 +103,7 @@ const depsRan = osv != null;
 // ---- detect: manifest, install scripts, license ----
 for (const f of detect?.findings ?? []) add(f);
 const manifest = detect?.manifest ?? null;
-if (!manifest) add({ id: "no-manifest", severity: "low", category: "manifest", title: "No manifest declaring network access and environment variables (agentvet.json)" });
+if (!manifest) add({ id: "no-manifest", severity: "low", category: "manifest", title: "No manifest declaring network access and environment variables (agent.json)" });
 if (!detect?.licenseFile) add({ id: "no-license", severity: "low", category: "license", title: "No license file" });
 
 const declaredEnv = new Set(manifest?.env ?? []);
@@ -136,7 +136,7 @@ if (full && dynamic) {
     if (!probes.length) {
       // No known start command (common in monorepos) means "not tested", not a failure.
       boot = "skip";
-      if (build === "pass") add({ id: "no-entrypoint", severity: "low", category: "boot", title: "Couldn't work out how to start the server. Set \"entrypoint\" in agentvet.json." });
+      if (build === "pass") add({ id: "no-entrypoint", severity: "low", category: "boot", title: "Couldn't work out how to start the server. Set \"entrypoint\" in agent.json." });
     } else {
       const okRuns = probes.filter((p) => p?.ok);
       boot = okRuns.length ? "pass" : "fail";

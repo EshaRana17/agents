@@ -1,6 +1,6 @@
 // Shared helpers. Everything here treats repo contents as untrusted data: files are only
 // read and parsed, never imported or executed on the host.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const MAX_TEXT = 300;
@@ -15,7 +15,9 @@ export function readJson(path, fallback = null) {
 
 export function readText(path, max = 200_000) {
   try {
-    if (statSync(path).size > 5_000_000) return null;
+    // lstat, not stat: a repo can contain symlinks to /dev/zero or files outside itself.
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size > 5_000_000) return null;
     return readFileSync(path, "utf8").slice(0, max);
   } catch {
     return null;

@@ -1,4 +1,4 @@
-# AgentVet Verifier
+# Vetted Agents Verifier
 
 Free, automated security scans for AI agents, MCP servers and agent skills. Every scan runs on a
 fresh GitHub Actions virtual machine that is destroyed afterwards, and the untrusted code itself
@@ -40,7 +40,7 @@ Start at 100: −40 per critical, −15 per high, −5 per medium (max −25), �
 
 Badges: `Scanned`, `Builds`, `Boots`, `No undeclared egress`, `Reproducible`.
 
-## Manifest: `agentvet.json`
+## Manifest: `agent.json`
 
 Optional, but it's how a repo declares what it needs. Without it, any network traffic at runtime
 counts as undeclared.
@@ -59,7 +59,8 @@ counts as undeclared.
 ```
 
 `type` is `agent`, `mcp` or `skill`. `entrypoint` is how to start an MCP server over stdio. MCP
-Registry `server.json` and skill `SKILL.md` frontmatter are also read when there's no `agentvet.json`.
+Registry `server.json` and skill `SKILL.md` frontmatter are also read when there's no manifest.
+`vettedagents.json` and the older `agentvet.json` are accepted under the same format.
 
 ## Setup (one time)
 

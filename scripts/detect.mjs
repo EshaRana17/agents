@@ -16,7 +16,7 @@ const files = (() => {
 const lower = files.map((f) => f.toLowerCase());
 const findings = [];
 
-// ---- Manifest: agentvet.json (preferred), agent.json, MCP server.json, SKILL.md ----
+// ---- Manifest: agent.json or vettedagents.json (agentvet.json still read), MCP server.json, SKILL.md ----
 function parseFrontmatter(md) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(md ?? "");
   if (!m) return null;
@@ -30,7 +30,7 @@ function parseFrontmatter(md) {
 
 let manifest = null;
 let manifestFile = null;
-for (const name of ["agentvet.json", "agent.json"]) {
+for (const name of ["vettedagents.json", "agent.json", "agentvet.json"]) {
   if (has(dir, name)) {
     manifestFile = name;
     const raw = readJson(join(dir, name));
