@@ -2,7 +2,7 @@
 // Usage: node report.mjs <out-dir>  → prints the final report JSON.
 // Combines detect / semgrep / gitleaks / osv / dynamic outputs into findings, a score and badges.
 import { join } from "node:path";
-import { clean, hostMatches, readJson, rel } from "./lib.mjs";
+import { clean, hostMatches, readJson, readText, rel } from "./lib.mjs";
 
 const OUT = process.argv[2] ?? "out";
 const meta = readJson(join(OUT, "meta.json"), {});
@@ -103,6 +103,10 @@ const depsRan = osv != null;
 // ---- detect: manifest, install scripts, license ----
 for (const f of detect?.findings ?? []) add(f);
 const manifest = detect?.manifest ?? null;
+// Scanner-suppression files shipped by the repo are deleted before scanning; say so.
+const suppressions = (readText(join(OUT, "suppressions.txt"), 5000) ?? "").split("\n").filter(Boolean);
+if (suppressions.length)
+  add({ id: "scanner-suppressions", severity: "info", category: "static", title: `Ignored the repo's scanner suppression config (${suppressions.length} file${suppressions.length > 1 ? "s" : ""})`, detail: suppressions.slice(0, 5).join(", ") });
 if (!manifest) add({ id: "no-manifest", severity: "low", category: "manifest", title: "No manifest declaring network access and environment variables (agent.json)" });
 if (!detect?.licenseFile) add({ id: "no-license", severity: "low", category: "license", title: "No license file" });
 

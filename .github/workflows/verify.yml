@@ -61,7 +61,7 @@ jobs:
       OUT: out
     steps:
       - name: Check out verifier
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: verifier
           persist-credentials: false
@@ -84,6 +84,9 @@ jobs:
           fi
           COMMIT=$(git -C target rev-parse HEAD)
           rm -rf target/.git
+          # The scanned repo must not be able to switch our scanners off for its own code.
+          find target \( -name .semgrepignore -o -name .gitleaks.toml -o -name .gitleaksignore -o -name osv-scanner.toml -o -name .osv-scanner.toml \) \
+            -type f -printf '%P\n' -delete > "$OUT/suppressions.txt" || true
           SIZE_MB=$(du -sm target | cut -f1)
           echo "commit=$COMMIT size=${SIZE_MB}MB"
           if [ "$SIZE_MB" -gt 500 ]; then echo "::error::repository larger than 500 MB"; exit 1; fi
@@ -115,12 +118,12 @@ jobs:
       - name: Static code scan (Semgrep)
         run: |
           semgrep scan --config verifier/rules/agentvet.yml --json --output "$OUT/semgrep.json" \
-            --metrics off --disable-version-check --timeout 20 --max-target-bytes 2000000 \
+            --metrics off --disable-version-check --disable-nosem --timeout 20 --max-target-bytes 2000000 \
             --exclude node_modules --exclude '*.min.js' --exclude '*.map' target \
             || echo "semgrep exited $?"
 
       - name: Secrets scan (Gitleaks)
-        run: gitleaks dir target --report-format json --report-path "$OUT/gitleaks.json" --exit-code 0 --redact --no-banner || echo "gitleaks exited $?"
+        run: gitleaks dir target --report-format json --report-path "$OUT/gitleaks.json" --exit-code 0 --redact --no-banner --ignore-gitleaks-allow || echo "gitleaks exited $?"
 
       - name: Dependency audit (OSV-Scanner)
         run: |
@@ -152,7 +155,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: report-${{ inputs.job_id }}
           # Logs help sellers fix failed builds. They come from the scanned repo, so they're
@@ -165,10 +168,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # The only step that sees the callback secret. Nothing from the target repo runs here.
-      - name: Send signed report to AgentVet
-        if: always()
+  # Runs on a fresh machine that never executed the scanned code, so the callback secret is
+  # never present on a VM the target repo could have tampered with.
+  callback:
+    needs: verify
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_ID: ${{ inputs.job_id }}
+      REPO: ${{ inputs.repo }}
+    steps:
+      - name: Check out verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: verifier
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Download report
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: report-${{ inputs.job_id }}
+          path: in
+
+      - name: Send signed report to Vetted Agents
         env:
           CALLBACK_URL: ${{ vars.CALLBACK_URL }}
           CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
-        run: node verifier/scripts/callback.mjs "$OUT/report.json"
+        run: |
+          mkdir -p in
+          if [ ! -f in/report.json ]; then
+            jq -n --arg jobId "$JOB_ID" --arg repo "$REPO" \
+              '{version:1, jobId:$jobId, repo:$repo, status:"error", score:null, badges:[], steps:[], findings:[{severity:"info", category:"error", title:"The scan did not finish"}]}' > in/report.json
+          fi
+          node verifier/scripts/callback.mjs in/report.json
