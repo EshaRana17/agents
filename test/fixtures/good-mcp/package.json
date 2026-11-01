@@ -1,0 +1,7 @@
+{
+  "name": "good-mcp",
+  "version": "1.0.0",
+  "description": "Test fixture: a well-behaved MCP server",
+  "bin": "server.js",
+  "license": "MIT"
+}

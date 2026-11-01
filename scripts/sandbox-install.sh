@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Runs INSIDE the sandbox container, in /w (a copy of the repo).
+# Usage: sandbox-install.sh <runtime> [custom install command]
+set -uo pipefail
+export HOME=/tmp/home && mkdir -p "$HOME"
+export npm_config_audit=false npm_config_fund=false npm_config_update_notifier=false
+runtime="$1"; custom="${2:-}"
+
+if [ -n "$custom" ]; then
+  bash -c "$custom"; exit $?
+fi
+
+case "$runtime" in
+  node)
+    # Non-root container: run package managers through corepack instead of `corepack enable`.
+    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile || corepack pnpm install || exit 1
+    elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile || corepack yarn install || exit 1
+    elif [ -f package-lock.json ]; then npm ci || npm install || exit 1
+    else npm install || exit 1
+    fi
+    if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then npm run build || exit 2; fi
+    ;;
+  python)
+    /opt/uv/uv venv .venv -q || exit 1
+    if [ -f pyproject.toml ] || [ -f setup.py ]; then /opt/uv/uv pip install -q -p .venv/bin/python -e . || exit 1
+    elif [ -f requirements.txt ]; then /opt/uv/uv pip install -q -p .venv/bin/python -r requirements.txt || exit 1
+    fi
+    ;;
+  *)
+    echo "No supported runtime (node or python) detected; skipping install."; exit 3
+    ;;
+esac

@@ -1,0 +1,167 @@
+name: verify
+run-name: "verify ${{ inputs.repo }} [${{ inputs.mode }}] ${{ inputs.job_id }}"
+
+# Dispatched by the AgentVet web app (or a maintainer) with a token that has actions:write
+# on this repo. Outsiders cannot trigger it, and it never runs on pull requests.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "GitHub repo to scan (owner/name)"
+        required: true
+        type: string
+      ref:
+        description: "Commit SHA, tag or branch (blank = default branch)"
+        required: false
+        type: string
+        default: ""
+      job_id:
+        description: "Verification id from the web app"
+        required: true
+        type: string
+      mode:
+        description: "light = static only, full = static + build/boot/egress"
+        required: true
+        type: choice
+        options: [full, light]
+        default: full
+      type_hint:
+        description: "agent | mcp | skill (optional)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ inputs.job_id }}
+  cancel-in-progress: true
+
+env:
+  SEMGREP_VERSION: "1.180.0"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  OSV_VERSION: "2.6.0"
+  OSV_SHA256: "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+  UV_VERSION: "0.12.24"
+  UV_SHA256: "b4dfaef47d491a7296981f8374a4595f55dbf84e8937c8ecd2983574d8bb3da6"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Inputs are only ever read through env vars, never interpolated into scripts.
+      REPO: ${{ inputs.repo }}
+      REF: ${{ inputs.ref }}
+      JOB_ID: ${{ inputs.job_id }}
+      MODE: ${{ inputs.mode }}
+      TYPE_HINT: ${{ inputs.type_hint }}
+      OUT: out
+    steps:
+      - name: Check out verifier
+        uses: actions/checkout@v4
+        with:
+          path: verifier
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          [[ "$REPO" =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || { echo "::error::invalid repo"; exit 1; }
+          [[ -z "$REF" || "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || { echo "::error::invalid ref"; exit 1; }
+          [[ "$JOB_ID" =~ ^[A-Za-z0-9-]{8,64}$ ]] || { echo "::error::invalid job id"; exit 1; }
+          [[ -z "$TYPE_HINT" || "$TYPE_HINT" =~ ^(agent|mcp|skill)$ ]] || { echo "::error::invalid type"; exit 1; }
+          mkdir -p "$OUT"
+
+      - name: Fetch target repository
+        run: |
+          export GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0
+          git -c core.hooksPath=/dev/null clone --quiet --depth 1 --no-recurse-submodules "https://github.com/$REPO.git" target
+          if [ -n "$REF" ]; then
+            git -C target -c core.hooksPath=/dev/null fetch --quiet --depth 1 origin "$REF"
+            git -C target -c core.hooksPath=/dev/null checkout --quiet FETCH_HEAD
+          fi
+          COMMIT=$(git -C target rev-parse HEAD)
+          rm -rf target/.git
+          SIZE_MB=$(du -sm target | cut -f1)
+          echo "commit=$COMMIT size=${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 500 ]; then echo "::error::repository larger than 500 MB"; exit 1; fi
+          jq -n --arg repo "$REPO" --arg commit "$COMMIT" --arg mode "$MODE" --arg jobId "$JOB_ID" \
+            --arg runUrl "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{repo:$repo, commit:$commit, mode:$mode, jobId:$jobId, runUrl:$runUrl, startedAt:$startedAt}' > "$OUT/meta.json"
+
+      - name: Install scanners (pinned, checksum-verified)
+        run: |
+          pipx install --quiet "semgrep==$SEMGREP_VERSION"
+          mkdir -p "$RUNNER_TEMP/bin"; cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz -C bin gitleaks
+          curl -sSfL -o bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v$OSV_VERSION/osv-scanner_linux_amd64"
+          echo "$OSV_SHA256  bin/osv-scanner" | sha256sum -c -
+          chmod +x bin/osv-scanner
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          if [ "$MODE" = "full" ]; then
+            curl -sSfL -o uv.tgz "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-x86_64-unknown-linux-gnu.tar.gz"
+            echo "$UV_SHA256  uv.tgz" | sha256sum -c -
+            sudo mkdir -p /opt/uv && sudo tar -xzf uv.tgz -C /opt/uv --strip-components 1
+          fi
+
+      - name: Detect runtime and manifest
+        run: node verifier/scripts/detect.mjs target "$TYPE_HINT" > "$OUT/detect.json" && cat "$OUT/detect.json"
+
+      - name: Static code scan (Semgrep)
+        run: |
+          semgrep scan --config verifier/rules/agentvet.yml --json --output "$OUT/semgrep.json" \
+            --metrics off --disable-version-check --timeout 20 --max-target-bytes 2000000 \
+            --exclude node_modules --exclude '*.min.js' --exclude '*.map' target \
+            || echo "semgrep exited $?"
+
+      - name: Secrets scan (Gitleaks)
+        run: gitleaks dir target --report-format json --report-path "$OUT/gitleaks.json" --exit-code 0 --redact --no-banner || echo "gitleaks exited $?"
+
+      - name: Dependency audit (OSV-Scanner)
+        run: |
+          set +e
+          osv-scanner scan source -r target --format json --output-file "$OUT/osv.json"
+          code=$?
+          # 0 = clean, 1 = vulnerabilities found, 128 = no lockfiles/packages to check
+          if [ "$code" -eq 128 ]; then echo '{"results":[]}' > "$OUT/osv.json"; fi
+          echo "osv-scanner exited $code"
+
+      - name: Build, boot and egress capture (sandboxed)
+        if: inputs.mode == 'full'
+        run: bash verifier/scripts/dynamic.sh
+
+      - name: Build report
+        if: always()
+        run: |
+          if [ -f "$OUT/meta.json" ]; then
+            node verifier/scripts/report.mjs "$OUT" > "$OUT/report.json"
+          else
+            jq -n --arg jobId "$JOB_ID" --arg repo "$REPO" \
+              '{version:1, jobId:$jobId, repo:$repo, status:"error", score:null, badges:[], steps:[], findings:[{severity:"info", category:"error", title:"Could not fetch the repository"}]}' > "$OUT/report.json"
+          fi
+          jq '{status, score, badges, counts}' "$OUT/report.json"
+          {
+            echo "### $REPO — $(jq -r .status "$OUT/report.json") ($(jq -r .score "$OUT/report.json"))"
+            jq -r '.findings[]? | "- **\(.severity)** \(.title) `\(.file // "")`"' "$OUT/report.json" | head -50
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ inputs.job_id }}
+          path: out/report.json
+          retention-days: 30
+
+      # The only step that sees the callback secret. Nothing from the target repo runs here.
+      - name: Send signed report to AgentVet
+        if: always()
+        env:
+          CALLBACK_URL: ${{ vars.CALLBACK_URL }}
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+        run: node verifier/scripts/callback.mjs "$OUT/report.json"

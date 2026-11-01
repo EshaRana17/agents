@@ -1,0 +1,9 @@
+{
+  "name": "good-mcp",
+  "description": "Adds numbers and echoes text.",
+  "type": "mcp",
+  "entrypoint": "node server.js",
+  "network": [],
+  "env": [],
+  "filesystem": "none"
+}
