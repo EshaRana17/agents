@@ -134,7 +134,8 @@ if (full && dynamic) {
   const probes = Array.isArray(dynamic.probes) ? dynamic.probes : [];
   if (detect?.type === "mcp") {
     if (!probes.length) {
-      boot = build === "pass" ? "fail" : "skip";
+      // No known start command (common in monorepos) means "not tested", not a failure.
+      boot = "skip";
       if (build === "pass") add({ id: "no-entrypoint", severity: "low", category: "boot", title: "Couldn't work out how to start the server. Set \"entrypoint\" in agentvet.json." });
     } else {
       const okRuns = probes.filter((p) => p?.ok);

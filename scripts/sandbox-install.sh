@@ -12,8 +12,11 @@ fi
 
 case "$runtime" in
   node)
-    # Non-root container: run package managers through corepack instead of `corepack enable`.
+    # Non-root container: install pnpm/yarn shims into a writable dir so build scripts that
+    # call `pnpm ...` directly also work.
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    mkdir -p "$HOME/bin" && corepack enable --install-directory "$HOME/bin" >/dev/null 2>&1
+    export PATH="$HOME/bin:$PATH"
     # Build with the same package manager the repo uses (pnpm/yarn workspaces break under npm).
     if [ -f pnpm-lock.yaml ]; then pm="corepack pnpm"; $pm install --frozen-lockfile || $pm install || exit 1
     elif [ -f yarn.lock ]; then pm="corepack yarn"; $pm install --frozen-lockfile || $pm install || exit 1
