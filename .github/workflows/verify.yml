@@ -150,7 +150,8 @@ jobs:
           jq '{status, score, badges, counts}' "$OUT/report.json"
           {
             echo "### $REPO — $(jq -r .status "$OUT/report.json") ($(jq -r .score "$OUT/report.json"))"
-            jq -r '.findings[]? | "- **\(.severity)** \(.title) `\(.file // "")`"' "$OUT/report.json" | head -50
+            # Public log: counts only. Finding details go to the maintainer, not the public run page.
+            jq -r '.counts // {} | to_entries[] | "- \(.key): \(.value)"' "$OUT/report.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report
@@ -166,7 +167,7 @@ jobs:
             out/install.log
             out/probe.log
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 1
 
   # Runs on a fresh machine that never executed the scanned code, so the callback secret is
   # never present on a VM the target repo could have tampered with.
