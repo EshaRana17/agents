@@ -1,30 +1,31 @@
 # AgentVet static rules. metadata.av_severity drives scoring:
 #   critical = very likely malicious, high = dangerous capability, medium = needs review, low = informational
+# Capability rules (credential paths, env dumps, piping downloads to a shell, webhooks) are "high":
+# many legitimate tools do these things. report.mjs raises them to critical only when the same file
+# also sends data out, or the live run contacted undeclared hosts.
 rules:
   # ---------------------------------------------------------------- credential theft
   - id: av-read-sensitive-paths
     languages: [javascript, typescript, python]
     severity: ERROR
-    message: Reads a sensitive credential location (SSH keys, cloud credentials, browser data or wallets).
-    metadata: { av_severity: critical, av_category: credential-access }
-    pattern-regex: (?i)(\.ssh/(id_[a-z0-9]+|authorized_keys|known_hosts)|\.aws/credentials|\.config/gcloud|\.azure/|\.kube/config|\.docker/config\.json|\.npmrc|\.pypirc|\.netrc|\.git-credentials|Login Data|Local State|Cookies\.sqlite|key4\.db|logins\.json|Library/Keychains|wallet\.dat|Exodus|MetaMask|Phantom|\.electrum)
+    message: Touches a sensitive credential location (SSH keys, cloud credentials, browser data or wallets). Expected for some tools, such as browser automation; check why.
+    metadata: { av_severity: high, av_category: credential-access }
+    pattern-regex: (?i)(\.ssh/(id_[a-z0-9]+|authorized_keys)|\.aws/credentials|\.config/gcloud|\.kube/config|\.docker/config\.json|\.pypirc|\.netrc|\.git-credentials|Login Data|Cookies\.sqlite|key4\.db|logins\.json|Library/Keychains|wallet\.dat|\.electrum)
 
   - id: av-env-dump-exfil-js
     languages: [javascript, typescript]
     severity: ERROR
-    message: Serializes the entire process environment, which contains secrets. Combined with a network call this is exfiltration.
-    metadata: { av_severity: critical, av_category: exfiltration }
+    message: Serializes the entire process environment, which contains secrets. Only a problem if it is sent somewhere.
+    metadata: { av_severity: high, av_category: exfiltration }
     pattern-either:
       - pattern: JSON.stringify(process.env)
-      - pattern: Object.entries(process.env)
-      - pattern: "{...process.env}"
       - pattern: Buffer.from(JSON.stringify(process.env))
 
   - id: av-env-dump-exfil-py
     languages: [python]
     severity: ERROR
-    message: Serializes the entire environment, which contains secrets.
-    metadata: { av_severity: critical, av_category: exfiltration }
+    message: Serializes the entire environment, which contains secrets. Only a problem if it is sent somewhere.
+    metadata: { av_severity: high, av_category: exfiltration }
     pattern-either:
       - pattern: json.dumps(dict(os.environ))
       - pattern: json.dumps(os.environ)
@@ -61,8 +62,8 @@ rules:
   - id: av-remote-code-pipe
     languages: [javascript, typescript, python]
     severity: ERROR
-    message: Downloads a script and pipes it straight into a shell.
-    metadata: { av_severity: critical, av_category: dropper }
+    message: Downloads a script and pipes it straight into a shell (often an installer command shown to users; check where it runs).
+    metadata: { av_severity: high, av_category: dropper }
     pattern-regex: (?i)(curl|wget)\s[^\n|;]{0,200}\|\s*(sudo\s+)?(ba|z)?sh\b
 
   - id: av-crypto-miner
@@ -77,7 +78,9 @@ rules:
     severity: ERROR
     message: Looks like a reverse shell.
     metadata: { av_severity: critical, av_category: backdoor }
-    pattern-regex: (/dev/tcp/\d|nc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh)
+    # pty.spawn("/bin/sh") with a single argument is the Python reverse-shell idiom; terminal apps
+    # call node-pty's pty.spawn("/bin/sh", [args], opts) legitimately.
+    pattern-regex: (/dev/tcp/\d|nc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh["']\s*\))
 
   - id: av-huge-encoded-blob
     languages: [javascript, typescript, python]

@@ -1,4 +1,4 @@
-# Vetted Agents Verifier
+# AgenticMart Verifier
 
 Free, automated security scans for AI agents, MCP servers and agent skills. Every scan runs on a
 fresh GitHub Actions virtual machine that is destroyed afterwards, and the untrusted code itself
@@ -31,12 +31,24 @@ repo is mounted writable; the verifier scripts are mounted read-only.
 
 ### Scoring
 
-Start at 100: −40 per critical, −15 per high, −5 per medium (max −25), −1 per low (max −5),
-−10 if the build fails, −10 if the MCP handshake fails.
+The scan is a malware check. Only signs of malicious code fail a repo:
 
-- **failed**: any critical finding, or score < 50
-- **warning**: any high finding, score < 80, or a scanner didn't run
-- **passed**: everything else
+- **critical** (fails): hidden or decoded code that runs itself, crypto miners, reverse shells,
+  known-malicious packages (OSV `MAL-`), install scripts that download and run code, and
+  "likely exfiltration": code that dumps the environment and sends data to a webhook or raw IP in
+  the same file, or secret-touching code plus unexpected connections during the live run.
+- **high / medium** (reported, lightly scored): capabilities many legitimate tools need, such as
+  credential paths, env dumps, shell commands, `curl | sh`, webhooks, eval, plus committed secrets
+  and vulnerable dependencies.
+- Findings in tests, examples, docs, fixtures and mocks drop to low (malware patterns there drop to
+  high). Without an `agent.json`, contacted domains are listed as low, not "undeclared".
+
+Score: 100, −40 per critical, then capped deductions: capabilities 20, dependencies 10, secrets 10,
+build 10, boot 10, env 3, license 5, manifest 5.
+
+- **failed**: any critical finding
+- **warning**: a scanner didn't run, so the result is incomplete
+- **passed**: no signs of malware
 
 Badges: `Scanned`, `Builds`, `Boots`, `No undeclared egress`, `Reproducible`.
 

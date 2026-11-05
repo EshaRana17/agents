@@ -25,8 +25,16 @@ const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 const findings = [];
 const add = (f) => findings.push({ ...f, title: clean(f.title, 160), detail: clean(f.detail, 300), file: f.file ? rel(f.file) : null });
 
+// Docs, examples and tests are full of placeholder keys and demo code that never runs on install.
+const NON_PROD = /(^|\/)(docs?|examples?|samples?|tests?|__tests__|spec|fixtures?|mocks?|benchmarks?|e2e)\/|(^|\/)[^/]*(fixture|mock)[^/]*$|\.(md|mdx|rst|txt)$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(py|go)$|(^|\/)test_[^/]*\.py$/i;
+const DOCS = /\.(md|mdx|rst|txt)$/i;
+// Categories that are signs of malware on their own. Everything else is a capability that many
+// legitimate tools need, and only becomes critical with evidence that data leaves the machine.
+const MALWARE = new Set(["obfuscation", "miner", "backdoor"]);
+
 // ---- static: semgrep ----
 const envReads = new Set();
+const staticFindings = [];
 for (const r of semgrep?.results ?? []) {
   const sev = r.extra?.metadata?.av_severity ?? "medium";
   if (sev === "info") {
@@ -36,14 +44,33 @@ for (const r of semgrep?.results ?? []) {
     continue;
   }
   add({ id: r.check_id?.split(".").pop(), severity: sev, category: r.extra?.metadata?.av_category ?? "code", title: r.extra?.message, file: r.path, line: r.start?.line });
+  staticFindings.push(findings[findings.length - 1]);
+}
+for (const f of staticFindings) {
+  const nonProd = f.file && NON_PROD.test(f.file);
+  if (!nonProd) continue;
+  // Malware patterns in tests/fixtures don't run on install but still deserve a look.
+  f.severity = MALWARE.has(f.category) && !DOCS.test(f.file) ? "high" : "low";
+  f.title = `In tests/examples/docs: ${f.title}`;
+}
+// Reading secrets and sending data out in the same production file is the exfiltration pattern.
+const SENDS = new Set(["av-webhook-exfil", "av-raw-ip-url"]);
+const byFile = new Map();
+for (const f of staticFindings) if (f.file && f.severity !== "low") byFile.set(f.file, [...(byFile.get(f.file) ?? []), f]);
+for (const [file, fs] of byFile) {
+  // Only real code that dumps the environment counts: credential *paths* also appear as plain strings
+  // in redaction lists, docs and config, which would make this match far too often.
+  const reads = fs.find((f) => f.id?.startsWith("av-env-dump"));
+  const sends = fs.find((f) => SENDS.has(f.id));
+  if (reads && sends)
+    add({ id: "likely-exfiltration", severity: "critical", category: "exfiltration", title: "Reads secrets and sends data to an external endpoint in the same file", detail: `${reads.title} / ${sends.title}`, file, line: reads.line });
 }
 // A config-level error (no file path) means no rules ran, so an empty result isn't a clean scan.
 const staticRan = Array.isArray(semgrep?.results) && !(semgrep.errors ?? []).some((e) => e.level === "error" && !e.path);
 
 // ---- secrets: gitleaks (never copy the secret itself) ----
-// Docs, examples and tests are full of placeholder keys; report those as low and group
-// repeats so one example file doesn't produce dozens of findings.
-const NON_PROD = /(^|\/)(docs?|examples?|samples?|tests?|__tests__|spec|fixtures?|mocks?)\/|\.(md|mdx|rst|txt)$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(py|go)$|(^|\/)test_[^/]*\.py$/i;
+// Placeholder keys in docs/examples/tests are reported as low (NON_PROD above), and repeats are
+// grouped so one example file doesn't produce dozens of findings.
 const secretGroups = new Map();
 for (const g of Array.isArray(gitleaks) ? gitleaks : []) {
   const file = rel(g.File);
@@ -56,7 +83,8 @@ for (const g of secretGroups.values()) {
   const example = NON_PROD.test(g.file);
   add({
     id: "secret",
-    severity: example ? "low" : /private-key/i.test(g.rule) ? "critical" : "high",
+    // A committed key is a hygiene problem for the maintainer, not malware aimed at the user.
+    severity: example ? "low" : "high",
     category: "secrets",
     title: example ? `Possible example credential in docs/tests: ${g.rule}` : `Committed secret: ${g.rule}`,
     detail: g.n > 1 ? `${g.n} matches in this file` : null,
@@ -132,7 +160,14 @@ if (full && dynamic) {
   const oddInstall = egress.install.filter((d) => !hostMatches(d, REGISTRIES) && !hostMatches(d, declaredNet));
   egress.undeclared = egress.runtime.filter((d) => !hostMatches(d, declaredNet));
   if (oddInstall.length) add({ id: "install-egress", severity: "medium", category: "network", title: "Install contacted hosts other than package registries", detail: oddInstall.slice(0, 10).join(", ") });
-  if (egress.undeclared.length) add({ id: "undeclared-egress", severity: "high", category: "network", title: "Contacted domains it did not declare while starting up", detail: egress.undeclared.slice(0, 10).join(", ") });
+  // Without a manifest nothing is "declared", so contacted hosts are listed for information only.
+  if (egress.undeclared.length)
+    add(manifest
+      ? { id: "undeclared-egress", severity: "high", category: "network", title: "Contacted domains it did not declare while starting up", detail: egress.undeclared.slice(0, 10).join(", ") }
+      : { id: "runtime-egress", severity: "low", category: "network", title: "Contacted these domains while starting up (no manifest to compare against)", detail: egress.undeclared.slice(0, 10).join(", ") });
+  const capability = staticFindings.find((f) => f.severity === "high" && (f.category === "credential-access" || f.category === "exfiltration"));
+  if (capability && (egress.rawIps.length || (manifest && egress.undeclared.length)))
+    add({ id: "likely-exfiltration", severity: "critical", category: "exfiltration", title: "Touches secrets in code and made unexpected network connections when run", detail: capability.title, file: capability.file, line: capability.line });
   if (egress.rawIps.length) add({ id: "raw-ip-egress", severity: "high", category: "network", title: "Connected to IP addresses without a DNS lookup", detail: egress.rawIps.slice(0, 10).join(", ") });
 
   const probes = Array.isArray(dynamic.probes) ? dynamic.probes : [];
@@ -156,21 +191,26 @@ if (full && dynamic) {
 }
 
 // ---- score ----
-// Malicious-looking code (critical) always costs 40. Everything else is capped per category,
-// so a repo with many outdated dependencies or example keys can't sink to zero on that alone.
+// The scan is a malware check: malicious-looking code (critical) costs 40 each. Capabilities that
+// legitimate tools need (shell, env, credential paths, network) and hygiene issues (old dependencies,
+// committed keys) are reported but only lightly scored, capped as a group.
 const counts = Object.fromEntries(SEV_ORDER.map((s) => [s, findings.filter((f) => f.severity === s).length]));
-const CAPS = { dependencies: 20, secrets: 30, env: 3, license: 5, manifest: 5, build: 10, boot: 10 };
-const WEIGHT = { high: 15, medium: 5, low: 1, info: 0 };
+const CAPABILITY = new Set(["credential-access", "exfiltration", "obfuscation", "dropper", "code-execution", "shell", "network", "install-script", "miner", "backdoor"]);
+const CAPS = { capability: 20, dependencies: 10, secrets: 10, env: 3, license: 5, manifest: 5, build: 10, boot: 10 };
+const WEIGHT = { high: 5, medium: 2, low: 1, info: 0 };
 const byCat = {};
-for (const f of findings) if (f.severity !== "critical") byCat[f.category] = (byCat[f.category] ?? 0) + WEIGHT[f.severity];
+for (const f of findings) {
+  if (f.severity === "critical") continue;
+  const cat = CAPABILITY.has(f.category) ? "capability" : f.category;
+  byCat[cat] = (byCat[cat] ?? 0) + WEIGHT[f.severity];
+}
 let score = 100 - 40 * counts.critical;
-for (const [cat, pts] of Object.entries(byCat)) score -= Math.min(CAPS[cat] ?? 45, pts);
-if (build === "fail") score -= 10;
-if (boot === "fail") score -= 10;
+for (const [cat, pts] of Object.entries(byCat)) score -= Math.min(CAPS[cat] ?? 5, pts);
 score = Math.max(0, Math.min(100, score));
 
 const scanErrors = [!staticRan && "static", !secretsRan && "secrets", !depsRan && "dependencies"].filter(Boolean);
-const status = scanErrors.length === 3 ? "error" : counts.critical ? "failed" : counts.high || score < 80 || scanErrors.length ? "warning" : "passed";
+// failed = signs of malware; warning = a check couldn't run, so we can't say; passed = no malware signs.
+const status = scanErrors.length === 3 ? "error" : counts.critical ? "failed" : scanErrors.length ? "warning" : "passed";
 
 const badges = [];
 if (staticRan && secretsRan && !counts.critical) badges.push("Scanned");
