@@ -81,7 +81,7 @@ rules:
     # pty.spawn("/bin/sh") with a single argument is the Python reverse-shell idiom; terminal apps
     # call node-pty's pty.spawn("/bin/sh", [args], opts) legitimately.
     # /dev/tcp to 127.x is local IPC (e.g. a bash relay to the app's own port), not a remote shell.
-    pattern-regex: (/dev/tcp/(?!127\.)\d|nc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh["']\s*\))
+    pattern-regex: (/dev/tcp/(?!127\.)\d|\bnc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh["']\s*\))
 
   - id: av-huge-encoded-blob
     languages: [javascript, typescript, python]
