@@ -31,6 +31,9 @@ const DOCS = /\.(md|mdx|rst|txt)$/i;
 // Categories that are signs of malware on their own. Everything else is a capability that many
 // legitimate tools need, and only becomes critical with evidence that data leaves the machine.
 const MALWARE = new Set(["obfuscation", "miner", "backdoor"]);
+// Security tools (guards, scanners, blocklists) contain malware names and patterns as detection
+// signatures, the same way antivirus software does.
+const SECURITY_FILE = /(guard|scan|detect|secur|signature|rule|block|deny|allow|sanitiz|redact|malware|threat|firewall|policy)[^/]*$/i;
 
 // ---- static: semgrep ----
 const envReads = new Set();
@@ -47,6 +50,11 @@ for (const r of semgrep?.results ?? []) {
   staticFindings.push(findings[findings.length - 1]);
 }
 for (const f of staticFindings) {
+  if (MALWARE.has(f.category) && f.file && SECURITY_FILE.test(f.file)) {
+    f.severity = "high";
+    f.title = `In a security/detection file (likely a detection pattern): ${f.title}`;
+    continue;
+  }
   const nonProd = f.file && NON_PROD.test(f.file);
   if (!nonProd) continue;
   // Malware patterns in tests/fixtures don't run on install but still deserve a look.

@@ -80,7 +80,8 @@ rules:
     metadata: { av_severity: critical, av_category: backdoor }
     # pty.spawn("/bin/sh") with a single argument is the Python reverse-shell idiom; terminal apps
     # call node-pty's pty.spawn("/bin/sh", [args], opts) legitimately.
-    pattern-regex: (/dev/tcp/\d|nc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh["']\s*\))
+    # /dev/tcp to 127.x is local IPC (e.g. a bash relay to the app's own port), not a remote shell.
+    pattern-regex: (/dev/tcp/(?!127\.)\d|nc(at)?\s+(-e|-c)\s|bash\s+-i\s+>&|pty\.spawn\(\s*["']/bin/(ba)?sh["']\s*\))
 
   - id: av-huge-encoded-blob
     languages: [javascript, typescript, python]

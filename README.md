@@ -40,6 +40,9 @@ The scan is a malware check. Only signs of malicious code fail a repo:
 - **high / medium** (reported, lightly scored): capabilities many legitimate tools need, such as
   credential paths, env dumps, shell commands, `curl | sh`, webhooks, eval, plus committed secrets
   and vulnerable dependencies.
+- Malware patterns in files named like security tools (guard, scanner, detect, rules, blocklist…)
+  drop to high, because those files list malware names as detection signatures. Known limitation:
+  malware hidden in a file with such a name is reported for review, not failed.
 - Findings in tests, examples, docs, fixtures and mocks drop to low (malware patterns there drop to
   high). Without an `agent.json`, contacted domains are listed as low, not "undeclared".
 

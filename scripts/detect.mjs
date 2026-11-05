@@ -92,7 +92,10 @@ if (["agent", "mcp", "skill"].includes(typeHint) && !manifest?.type) type = type
 for (const hook of ["preinstall", "install", "postinstall", "prepare"]) {
   const s = pkg?.scripts?.[hook];
   if (typeof s !== "string") continue;
-  const risky = /(curl|wget|Invoke-WebRequest|iwr)\b[^|]*\|\s*(ba|z)?sh|base64\s+-d|eval\s|node\s+-e|python\s+-c/i.test(s);
+  // Downloading and executing, or decoding and executing. `node -e`/`python -c` alone are common for
+  // small local checks in prepare scripts, so they only count alongside a download.
+  const download = /(curl|wget|Invoke-WebRequest|iwr)\b/i.test(s);
+  const risky = /(curl|wget|Invoke-WebRequest|iwr)\b[^|]*\|\s*(ba|z)?sh|base64\s+-d|eval\s/i.test(s) || (download && /node\s+-e|python\s+-c/i.test(s));
   findings.push({
     severity: risky ? "critical" : "low",
     category: "install-script",
