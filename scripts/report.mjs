@@ -34,6 +34,10 @@ const MALWARE = new Set(["obfuscation", "miner", "backdoor"]);
 // Security tools (guards, scanners, blocklists) contain malware names and patterns as detection
 // signatures, the same way antivirus software does.
 const SECURITY_FILE = /(guard|scan|detect|secur|signature|rule|block|deny|allow|sanitiz|redact|malware|threat|firewall|policy)[^/]*$/i;
+// ...or a folder named for defensive work (e.g. skills/detecting-cryptomining-in-cloud/scripts/agent.py).
+const SECURITY_DIR = /(^|\/)[^/]*(guard|scan|detect|secur|protect|defen[cs]e|monitor|hunt|forensic|incident|threat|firewall|malware)[^/]*\//i;
+// A line that is only quoted strings (an entry in a list of domains, commands or indicators).
+const STRING_LIST = /^\s*("[^"]*"|'[^']*'|`[^`]*`)(\s*,\s*("[^"]*"|'[^']*'|`[^`]*`))*\s*,?\s*(#.*|\/\/.*)?$/;
 
 // ---- static: semgrep ----
 const envReads = new Set();
@@ -66,13 +70,14 @@ for (const r of semgrep?.results ?? []) {
   sourceLine.set(findings[findings.length - 1], lineAt(r.path, r.start?.line));
 }
 for (const f of staticFindings) {
-  if (MALWARE.has(f.category) && f.file && SECURITY_FILE.test(f.file)) {
+  const src = sourceLine.get(f) ?? "";
+  const runs = EXEC_SINK.test(src);
+  if (MALWARE.has(f.category) && f.file && !runs && (SECURITY_FILE.test(f.file) || SECURITY_DIR.test(f.file))) {
     f.severity = "high";
     f.title = `In a security/detection file (likely a detection pattern): ${f.title}`;
     continue;
   }
-  const src = sourceLine.get(f) ?? "";
-  if (MALWARE.has(f.category) && (PAYLOAD_PATH.test(f.file ?? "") || (AS_DATA.test(src) && !EXEC_SINK.test(src)))) {
+  if (MALWARE.has(f.category) && (PAYLOAD_PATH.test(f.file ?? "") || (!runs && (AS_DATA.test(src) || STRING_LIST.test(src))))) {
     f.severity = "high";
     f.title = `Written as data (comment, pattern list or payload template), not run on install: ${f.title}`;
     continue;
