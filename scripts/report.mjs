@@ -26,7 +26,7 @@ const findings = [];
 const add = (f) => findings.push({ ...f, title: clean(f.title, 160), detail: clean(f.detail, 300), file: f.file ? rel(f.file) : null });
 
 // Docs, examples and tests are full of placeholder keys and demo code that never runs on install.
-const NON_PROD = /(^|\/)(docs?|examples?|samples?|tests?|__tests__|spec|fixtures?|mocks?|benchmarks?|e2e)\/|(^|\/)[^/]*(fixture|mock)[^/]*$|\.(md|mdx|rst|txt)$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(py|go)$|(^|\/)test_[^/]*\.py$/i;
+const NON_PROD = /(^|\/)(docs?|examples?|samples?|tests?|__tests__|spec|fixtures?|mocks?|benchmarks?|e2e)\/|(^|\/)[^/]*(mock|demo|simulat|synthetic)[^/]*\/|(^|\/)[^/]*(fixture|mock|demo|simulat|synthetic|_sim\.|^sim\.)[^/]*$|(^|\/)sim\.[a-z]+$|\.(md|mdx|rst|txt)$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(py|go)$|(^|\/)test_[^/]*\.py$/i;
 const DOCS = /\.(md|mdx|rst|txt)$/i;
 // Categories that are signs of malware on their own. Everything else is a capability that many
 // legitimate tools need, and only becomes critical with evidence that data leaves the machine.
@@ -75,6 +75,14 @@ for (const r of semgrep?.results ?? []) {
 for (const f of staticFindings) {
   const src = sourceLine.get(f) ?? "";
   const runs = EXEC_SINK.test(src);
+  // A miner's name is an indicator, not proof: security tools are full of them. Mining malware has to
+  // run the miner or point it at a pool, so keep it critical only for an executed line or a real pool
+  // address in production code.
+  if (f.category === "miner" && !runs && !(/stratum\+(tcp|ssl):\/\/[a-z0-9.-]+\.[a-z]{2,}/i.test(src) && !NON_PROD.test(f.file ?? ""))) {
+    f.severity = "high";
+    f.title = `Mentions mining software (an indicator, e.g. a detection list or sample data), not run on install: ${f.title}`;
+    continue;
+  }
   if (MALWARE.has(f.category) && f.file && !runs && (SECURITY_FILE.test(f.file) || SECURITY_DIR.test(f.file))) {
     f.severity = "high";
     f.title = `In a security/detection file (likely a detection pattern): ${f.title}`;
