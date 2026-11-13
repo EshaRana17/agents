@@ -37,7 +37,10 @@ const SECURITY_FILE = /(guard|scan|detect|secur|signature|rule|block|deny|allow|
 // ...or a folder named for defensive work (e.g. skills/detecting-cryptomining-in-cloud/scripts/agent.py).
 const SECURITY_DIR = /(^|\/)[^/]*(guard|scan|detect|secur|protect|defen[cs]e|monitor|hunt|forensic|incident|threat|firewall|malware)[^/]*\//i;
 // A line that is only quoted strings (an entry in a list of domains, commands or indicators).
-const STRING_LIST = /^\s*("[^"]*"|'[^']*'|`[^`]*`)(\s*,\s*("[^"]*"|'[^']*'|`[^`]*`))*\s*,?\s*(#.*|\/\/.*)?$/;
+const STRING_LIST = /^\s*(["'`][^"'`]*["'`]\s*:\s*)?[([{]?\s*("[^"]*"|'[^']*'|`[^`]*`)(\s*,\s*("[^"]*"|'[^']*'|`[^`]*`))*\s*[)\]}]*\s*,?\s*(#.*|\/\/.*)?$/;
+// Attack templates put a placeholder where the target goes ({ip}, ${target}, YOUR_IP, LHOST);
+// real malware hard-codes where it connects. Penetration-testing tools generate such templates.
+const PLACEHOLDER = /(\{\{?\s*[a-z_.]*(ip|host|addr|target|port|server|attacker)[a-z_.]*\s*\}?\}|\$\{?[a-z_]*(ip|host|addr|target|port)|\b(YOUR_IP|YOUR_HOST|ATTACKER_IP|LHOST|RHOST|LPORT)\b|<\s*(ip|host|attacker[-_ ]?ip|your[-_ ]?ip)\s*>)/i;
 
 // ---- static: semgrep ----
 const envReads = new Set();
@@ -77,9 +80,9 @@ for (const f of staticFindings) {
     f.title = `In a security/detection file (likely a detection pattern): ${f.title}`;
     continue;
   }
-  if (MALWARE.has(f.category) && (PAYLOAD_PATH.test(f.file ?? "") || (!runs && (AS_DATA.test(src) || STRING_LIST.test(src))))) {
+  if (MALWARE.has(f.category) && (PAYLOAD_PATH.test(f.file ?? "") || PLACEHOLDER.test(src) || (!runs && (AS_DATA.test(src) || STRING_LIST.test(src))))) {
     f.severity = "high";
-    f.title = `Written as data (comment, pattern list or payload template), not run on install: ${f.title}`;
+    f.title = `Written as data or as an attack template for a target the user picks, not run against you on install: ${f.title}`;
     continue;
   }
   const nonProd = f.file && NON_PROD.test(f.file);
