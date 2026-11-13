@@ -38,6 +38,21 @@ const SECURITY_FILE = /(guard|scan|detect|secur|signature|rule|block|deny|allow|
 // ---- static: semgrep ----
 const envReads = new Set();
 const staticFindings = [];
+// The matched source line, read from the checked-out repo (Semgrep OSS doesn't return it).
+const sourceLine = new Map();
+const fileCache = new Map();
+function lineAt(path, line) {
+  if (!path || !line) return "";
+  if (!fileCache.has(path)) fileCache.set(path, (readText(path, 2_000_000) ?? "").split(/\r?\n/));
+  return fileCache.get(path)[line - 1] ?? "";
+}
+// A malware pattern written as data rather than code: a comment, a regex, or an entry in a
+// detection, payload or test list. Security tools contain these strings in order to detect them,
+// and offensive-security tools generate them for a target the operator picks.
+const AS_DATA = /^\s*(\/\/|#|\*|\/\*|<!--|--|;)|\bRegExp\(|re\.compile|\bregex|\bpattern|signature|indicator|\bioc\b|example|expect|block|deny|detect|payload|exploit|\brule|\bmatch/i;
+// A line that hands the string to something that runs it stays critical whatever words it contains.
+const EXEC_SINK = /\b(os\.system|os\.popen|subprocess\.|Popen\(|exec\(|eval\(|execSync|spawn(Sync)?\(|child_process|Runtime\.getRuntime|system\(|shell_exec|passthru|pty\.spawn)/;
+const PAYLOAD_PATH =/(^|\/)(payloads?|exploits?|red[-_]?team|pentest|offensive|attacks?|evals?|corpus|samples?)(\/|[^/]*$)/i;
 for (const r of semgrep?.results ?? []) {
   const sev = r.extra?.metadata?.av_severity ?? "medium";
   if (sev === "info") {
@@ -48,11 +63,18 @@ for (const r of semgrep?.results ?? []) {
   }
   add({ id: r.check_id?.split(".").pop(), severity: sev, category: r.extra?.metadata?.av_category ?? "code", title: r.extra?.message, file: r.path, line: r.start?.line });
   staticFindings.push(findings[findings.length - 1]);
+  sourceLine.set(findings[findings.length - 1], lineAt(r.path, r.start?.line));
 }
 for (const f of staticFindings) {
   if (MALWARE.has(f.category) && f.file && SECURITY_FILE.test(f.file)) {
     f.severity = "high";
     f.title = `In a security/detection file (likely a detection pattern): ${f.title}`;
+    continue;
+  }
+  const src = sourceLine.get(f) ?? "";
+  if (MALWARE.has(f.category) && (PAYLOAD_PATH.test(f.file ?? "") || (AS_DATA.test(src) && !EXEC_SINK.test(src)))) {
+    f.severity = "high";
+    f.title = `Written as data (comment, pattern list or payload template), not run on install: ${f.title}`;
     continue;
   }
   const nonProd = f.file && NON_PROD.test(f.file);
@@ -124,12 +146,32 @@ for (const res of osv?.results ?? []) {
     }
   }
 }
+// npm replaces removed malicious packages with an empty "0.0.1-security" placeholder, and a lockfile
+// lists the project's own package; neither is malware the user installs.
+const ownName = (meta.repo ?? "").split("/").pop()?.toLowerCase().replace(/[-_.]+/g, "-") ?? "";
+for (const d of depGroups.values()) {
+  if (!d.malicious) continue;
+  const name = (d.name ?? "").toLowerCase().replace(/[-_.]+/g, "-");
+  if (d.version === "0.0.1-security" || (ownName && name === ownName)) {
+    d.malicious = false;
+    d.sev = "low";
+    d.note = d.version === "0.0.1-security" ? "npm security placeholder (empty package)" : "the project's own package";
+  } else if (d.file && rel(d.file).includes("/")) {
+    // A lockfile in a sub-project (e.g. a bundled web UI) is a build dependency, not what users install.
+    d.sev = "high";
+    d.note = "in a sub-project lockfile";
+  }
+}
 for (const d of depGroups.values()) {
   add({
     id: d.malicious ? "malicious-package" : "vulnerable-dependency",
     severity: d.sev,
     category: "dependencies",
-    title: d.malicious ? `Known malicious package: ${d.name}` : `${d.name}@${d.version}: ${d.ids.length} known ${d.ids.length === 1 ? "vulnerability" : "vulnerabilities"}`,
+    title: d.malicious
+      ? `Known malicious package version: ${d.name}@${d.version}${d.note ? ` (${d.note})` : ""}`
+      : d.note
+        ? `Matched a malicious-package advisory but is ${d.note}: ${d.name}@${d.version}`
+        : `${d.name}@${d.version}: ${d.ids.length} known ${d.ids.length === 1 ? "vulnerability" : "vulnerabilities"}`,
     detail: d.ids.slice(0, 5).join(", ") + (d.ids.length > 5 ? ` +${d.ids.length - 5} more` : ""),
     file: d.file,
   });
@@ -173,7 +215,8 @@ if (full && dynamic) {
     add(manifest
       ? { id: "undeclared-egress", severity: "high", category: "network", title: "Contacted domains it did not declare while starting up", detail: egress.undeclared.slice(0, 10).join(", ") }
       : { id: "runtime-egress", severity: "low", category: "network", title: "Contacted these domains while starting up (no manifest to compare against)", detail: egress.undeclared.slice(0, 10).join(", ") });
-  const capability = staticFindings.find((f) => f.severity === "high" && (f.category === "credential-access" || f.category === "exfiltration"));
+  // Only code that dumps the environment, not a credential path that may sit in a comment or list.
+  const capability = staticFindings.find((f) => f.severity === "high" && f.id?.startsWith("av-env-dump"));
   if (capability && (egress.rawIps.length || (manifest && egress.undeclared.length)))
     add({ id: "likely-exfiltration", severity: "critical", category: "exfiltration", title: "Touches secrets in code and made unexpected network connections when run", detail: capability.title, file: capability.file, line: capability.line });
   if (egress.rawIps.length) add({ id: "raw-ip-egress", severity: "high", category: "network", title: "Connected to IP addresses without a DNS lookup", detail: egress.rawIps.slice(0, 10).join(", ") });

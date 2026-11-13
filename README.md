@@ -43,6 +43,12 @@ The scan is a malware check. Only signs of malicious code fail a repo:
 - Malware patterns in files named like security tools (guard, scanner, detect, rules, blocklist…)
   drop to high, because those files list malware names as detection signatures. Known limitation:
   malware hidden in a file with such a name is reported for review, not failed.
+- Miner, reverse-shell and decode-and-run patterns written as data (a comment, a regex, or a
+  detection, payload or test list) or under payloads/exploits/red-team/evals/samples paths drop to
+  high, unless the same line passes the string to something that executes it (os.system,
+  subprocess, exec, spawn, child_process...).
+- Known-malicious-package hits are ignored for npm's `0.0.1-security` placeholders and the project's
+  own package, and are high (not critical) when the lockfile belongs to a sub-project.
 - Findings in tests, examples, docs, fixtures and mocks drop to low (malware patterns there drop to
   high). Without an `agent.json`, contacted domains are listed as low, not "undeclared".
 
